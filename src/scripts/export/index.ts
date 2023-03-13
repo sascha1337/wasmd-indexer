@@ -64,8 +64,7 @@ if (config.sentryDsn) {
   })
 }
 
-// Read state.
-let reading = false
+let readingPerModule: Record<string, boolean> = {}
 // When true, shut down ASAP.
 let shuttingDown = false
 
@@ -143,13 +142,13 @@ const main = async () => {
           clearInterval(stateInterval)
         }
       }, 1000)
-      // Allow process to exit even though this interval is alive.
     }),
     // Module reads.
     ...modules.map((params) => makeModulePromise(...params)),
   ])
 }
 
+let lastBlockHeight = 0
 // Update db state. Returns latest block height for log.
 const updateState = async (): Promise<State> => {
   const { statusEndpoint } = loadConfig()
@@ -179,6 +178,12 @@ const updateState = async (): Promise<State> => {
     }
   )
 
+  // If block height changed, log it.
+  if (lastBlockHeight && lastBlockHeight !== latestBlockHeight) {
+    console.log(`Updated block height: ${latestBlockHeight.toLocaleString()}`)
+  }
+  lastBlockHeight = latestBlockHeight
+
   return state
 }
 
@@ -193,8 +198,12 @@ const makeModulePromise = (
 
     // Main logic. Read through each module.
     const read = async () => {
+      if (shuttingDown) {
+        return
+      }
+
       try {
-        reading = true
+        readingPerModule[name] = true
 
         const fileStream = fs.createReadStream(sourceFile, {
           start: bytesRead,
@@ -225,17 +234,18 @@ const makeModulePromise = (
         // Update bytes read so we can start at this point in the next read.
         bytesRead += fileStream.bytesRead
 
+        // Stop reading if shutting down.
+        if (shuttingDown) {
+          readingPerModule[name] = false
+          return
+        }
+
         // Read again if pending.
         if (pendingRead) {
           pendingRead = false
           read()
         } else {
-          if (shuttingDown) {
-            exit()
-            return
-          }
-
-          reading = false
+          readingPerModule[name] = false
         }
       } catch (err) {
         Sentry.captureException(err, {
@@ -261,7 +271,7 @@ const makeModulePromise = (
       // If modified, read if not already reading, and store that there is
       // data to read otherwise.
       if (curr.mtime > prev.mtime) {
-        if (!reading) {
+        if (!readingPerModule[name]) {
           read()
         } else {
           pendingRead = true
@@ -278,7 +288,15 @@ main()
 
 process.on('SIGINT', () => {
   shuttingDown = true
-  if (!reading) {
+  // If no modules are reading, exit.
+  if (!Object.values(readingPerModule).some(Boolean)) {
     exit()
   }
+
+  console.log('Shutting down after modules finish their current tasks...')
+  setInterval(() => {
+    if (!Object.values(readingPerModule).some(Boolean)) {
+      exit()
+    }
+  }, 1000)
 })
