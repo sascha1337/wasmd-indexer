@@ -6,9 +6,17 @@ import { Contract, State } from '@/db'
 
 import { loadMeilisearch } from './client'
 
-export const updateIndexesForContracts = async (
+type UpdateIndexesForContractsOptions = {
   contracts?: Contract[]
-): Promise<number> => {
+  mode?: 'automatic' | 'manual'
+  index?: string
+}
+
+export const updateIndexesForContracts = async ({
+  contracts,
+  mode = 'automatic',
+  index: filterIndex,
+}: UpdateIndexesForContractsOptions = {}): Promise<number> => {
   const config = loadConfig()
 
   // If no meilisearch in config, nothing to update.
@@ -28,11 +36,22 @@ export const updateIndexesForContracts = async (
 
   for (const {
     index,
+    automatic = true,
     formula: formulaName,
     args = {},
     codeIdsKeys,
     contractAddresses,
   } of config.meilisearch.indexes) {
+    // If filter index is provided and does not match, skip.
+    if (filterIndex && filterIndex !== index) {
+      continue
+    }
+
+    // If not automatic, skip.
+    if (!automatic && mode === 'automatic') {
+      continue
+    }
+
     const formula = getContractFormula(formulaName)
     if (!formula) {
       throw new Error(`Formula ${formulaName} not found`)
@@ -101,6 +120,10 @@ export const updateIndexesForContracts = async (
               }
             })
           ))
+        )
+
+        console.log(
+          `[${index}] Finished computing ${documents.length.toLocaleString()}/${matchingContracts.length.toLocaleString()} formulas...`
         )
       }
 

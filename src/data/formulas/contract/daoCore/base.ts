@@ -5,15 +5,6 @@ import { isExpirationExpired } from '../../utils'
 import { info, instantiatedAt } from '../common'
 import { balance } from '../external/cw20'
 import {
-  openProposals as multipleChoiceOpenProposals,
-  proposalCount as multipleChoiceProposalCount,
-} from '../proposal/daoProposalMultiple'
-import {
-  openProposals as singleChoiceOpenProposals,
-  proposalCount as singleChoiceProposalCount,
-} from '../proposal/daoProposalSingle'
-import { ProposalResponse } from '../proposal/types'
-import {
   totalPower as daoVotingCw20StakedTotalPower,
   votingPower as daoVotingCw20StakedVotingPower,
 } from '../voting/daoVotingCw20Staked'
@@ -25,8 +16,9 @@ import {
   totalPower as daoVotingCw721StakedTotalPower,
   votingPower as daoVotingCw721StakedVotingPower,
 } from '../voting/daoVotingCw721Staked'
+import { proposalCount } from './proposals'
 
-interface Config {
+export type Config = {
   automatically_add_cw20s: boolean
   automatically_add_cw721s: boolean
   dao_uri?: string | null
@@ -35,11 +27,11 @@ interface Config {
   name: string
 }
 
-interface ProposalModuleWithInfo extends ProposalModule {
+export type ProposalModuleWithInfo = ProposalModule & {
   info?: ContractInfo
 }
 
-type PausedResponse =
+export type PausedResponse =
   | {
       Paused: {
         expiration: Expiration
@@ -49,7 +41,7 @@ type PausedResponse =
       Unpaused: {}
     }
 
-interface DumpState {
+export type DumpState = {
   // Same as contract query, except `pause_info`. `pause_info` is dynamic by
   // block since it deals with expiration, so it cannot be cached. However, we
   // want to cache DumpState to speed up the UI. The UI accesses `pause_info`
@@ -74,19 +66,14 @@ interface DumpState {
   proposalCount?: number
 }
 
-interface Cw20Balance {
+export type Cw20Balance = {
   addr: string
   balance?: string
 }
 
-interface SubDao {
+export type SubDao = {
   addr: string
   charter?: string | null
-}
-
-interface InboxItem {
-  proposalModuleAddress: string
-  proposals: (ProposalResponse<any> & { voted?: boolean })[]
 }
 
 const CONTRACT_NAMES = ['cw-core', 'cwd-core', 'dao-core']
@@ -533,117 +520,6 @@ const TOTAL_POWER_FORMULAS: ContractFormula<string>[] = [
   daoVotingCw20StakedTotalPower,
   daoVotingCw721StakedTotalPower,
 ]
-
-// Return open proposals and whether or not the given address voted. If no
-// address provided, just return open proposals.
-export const openProposals: ContractFormula<
-  InboxItem[] | undefined,
-  { address?: string }
-> = {
-  // This formula depends on the block height/time to check expiration.
-  dynamic: true,
-  compute: async (env) => {
-    const proposalModules = await activeProposalModules.compute(env)
-
-    if (!proposalModules) {
-      return undefined
-    }
-
-    return (
-      await Promise.all(
-        proposalModules.map(
-          async ({ address: proposalModuleAddress, info }) => {
-            if (!info) {
-              return undefined
-            }
-
-            const openProposalsFormula =
-              OPEN_PROPOSALS_MAP[info.contract.replace('crates.io:', '')]
-            const openProposals = await openProposalsFormula?.compute({
-              ...env,
-              contractAddress: proposalModuleAddress,
-            })
-
-            return (
-              openProposals && {
-                proposalModuleAddress,
-                proposals: openProposals,
-              }
-            )
-          }
-        )
-      )
-    ).filter(Boolean) as InboxItem[]
-  },
-}
-
-// Map contract name to open proposal formula.
-const OPEN_PROPOSALS_MAP: Record<
-  string,
-  | ContractFormula<
-      (ProposalResponse<any> & { voted?: boolean })[],
-      { address?: string }
-    >
-  | undefined
-> = {
-  // Single choice
-  // V1
-  'cw-govmod-single': singleChoiceOpenProposals,
-  'cw-proposal-single': singleChoiceOpenProposals,
-  // V2
-  'cwd-proposal-single': singleChoiceOpenProposals,
-  'dao-proposal-single': singleChoiceOpenProposals,
-
-  // Multiple choice
-  'cwd-proposal-multiple': multipleChoiceOpenProposals,
-  'dao-proposal-multiple': multipleChoiceOpenProposals,
-}
-
-export const proposalCount: ContractFormula<number | undefined> = {
-  compute: async (env) => {
-    const proposalModules = await activeProposalModules.compute(env)
-    if (!proposalModules) {
-      return undefined
-    }
-
-    // Get proposal count for each proposal module.
-    const proposalCounts = await Promise.all(
-      proposalModules.map(async ({ address: proposalModuleAddress, info }) => {
-        if (!info) {
-          return 0
-        }
-
-        const proposalCountFormula =
-          PROPOSAL_COUNT_MAP[info.contract.replace('crates.io:', '')]
-        const proposalCount = await proposalCountFormula?.compute({
-          ...env,
-          contractAddress: proposalModuleAddress,
-        })
-
-        return proposalCount ?? 0
-      })
-    )
-
-    // Sum.
-    return proposalCounts.reduce((a, b) => a + b)
-  },
-}
-
-// Map contract name to proposal count formula.
-const PROPOSAL_COUNT_MAP: Record<string, ContractFormula<number> | undefined> =
-  {
-    // Single choice
-    // V1
-    'cw-govmod-single': singleChoiceProposalCount,
-    'cw-proposal-single': singleChoiceProposalCount,
-    // V2
-    'cwd-proposal-single': singleChoiceProposalCount,
-    'dao-proposal-single': singleChoiceProposalCount,
-
-    // Multiple choice
-    'cwd-proposal-multiple': multipleChoiceProposalCount,
-    'dao-proposal-multiple': multipleChoiceProposalCount,
-  }
 
 // Returns contracts with an admin state key set to this DAO. Hopefully these
 // are mostly DAO contracts.

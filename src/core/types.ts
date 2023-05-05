@@ -1,4 +1,5 @@
 import { Options as PusherOptions } from 'pusher'
+import { WhereOptions } from 'sequelize'
 import { SequelizeOptions } from 'sequelize-typescript'
 
 import {
@@ -6,7 +7,8 @@ import {
   DependendableEventModel,
   StakingSlashEvent,
   State,
-  WasmEvent,
+  WasmStateEvent,
+  WasmTxEvent,
 } from '@/db'
 
 type DB = { uri?: string } & Pick<
@@ -32,7 +34,7 @@ export type Config = {
     wasm: string
     staking: string
   }
-  statusEndpoint: string
+  rpc: string
   db: {
     data: DB
     accounts: DB
@@ -42,6 +44,9 @@ export type Config = {
     apiKey?: string
     indexes: {
       index: string
+      // If true, the index will automatically be updated when the contract is
+      // modified. If false, it must be updated manually. Default: true.
+      automatic?: boolean
       filterableAttributes?: string[]
       sortableAttributes?: string[]
       formula: string
@@ -193,6 +198,27 @@ export type FormulaSlashEventsGetter = (
       | 'infractionBlockHeight'
       | 'slashFactor'
       | 'amountSlashed'
+      | 'effectiveFraction'
+      | 'stakedTokensBurned'
+    >[]
+  | undefined
+>
+
+export type FormulaTxEventsGetter = (
+  contractAddress: string,
+  where?: WhereOptions<WasmTxEvent>
+) => Promise<
+  | Pick<
+      WasmTxEvent,
+      | 'blockHeight'
+      | 'blockTimeUnixMs'
+      | 'blockTimestamp'
+      | 'contractAddress'
+      | 'action'
+      | 'sender'
+      | 'msgJson'
+      | 'funds'
+      | 'response'
     >[]
   | undefined
 >
@@ -216,13 +242,12 @@ export type Env<Args extends Record<string, string> = {}> = {
   getDateFirstTransformed: FormulaTransformationDateGetter
   prefetch: FormulaPrefetch
   prefetchTransformations: FormulaPrefetchTransformations
-
   getContract: FormulaContractGetter
   getCodeIdsForKeys: FormulaCodeIdsForKeysGetter
   contractMatchesCodeIdKeys: FormulaContractMatchesCodeIdKeysGetter
   getCodeIdKeyForContract: FormulaCodeIdKeyForContractGetter
-
   getSlashEvents: FormulaSlashEventsGetter
+  getTxEvents: FormulaTxEventsGetter
 }
 
 export interface EnvOptions {
@@ -254,9 +279,10 @@ export type ValidatorEnv<Args extends Record<string, string> = {}> =
 // Formulas compute a value for the state at one block height.
 export type Formula<R = any, E extends Env = Env> = {
   compute: (env: E) => Promise<R>
-  // If true, the formula is dynamic based on block input. This likely means
-  // that some expiration is being computed, which affects the output of the
-  // formula without any state changing.
+  // If true, the formula is non-deterministic within the same block, so it
+  // cannot be cached. This likely means that some expiration is being checked
+  // based on the latest time, which affects the output of the formula without
+  // any state changing.
   dynamic?: boolean
 }
 
@@ -295,19 +321,19 @@ export enum FormulaType {
 export type TypedFormula = { name: string } & (
   | {
       type: FormulaType.Contract
-      formula: ContractFormula<any, any>
+      formula: ContractFormula
     }
   | {
       type: FormulaType.Wallet
-      formula: WalletFormula<any, any>
+      formula: WalletFormula
     }
   | {
       type: FormulaType.Generic
-      formula: GenericFormula<any, any>
+      formula: GenericFormula
     }
   | {
       type: FormulaType.Validator
-      formula: ValidatorFormula<any, any>
+      formula: ValidatorFormula
     }
 )
 
@@ -371,7 +397,8 @@ export type SerializedBlock = {
   timeUnixMs: string
 }
 
-export type ParsedWasmEvent = {
+export type ParsedWasmStateEvent = {
+  type: 'state'
   codeId: number
   contractAddress: string
   blockHeight: string
@@ -382,6 +409,27 @@ export type ParsedWasmEvent = {
   valueJson: any
   delete: boolean
 }
+
+export type ParsedWasmTxEvent = {
+  type: 'tx'
+  blockHeight: string
+  blockTimeUnixMs: string
+  blockTimestamp: Date
+  txIndex: number
+  messageId: string
+  contractAddress: string
+  codeId: number
+  action: string
+  sender: string
+  msg: string | null
+  msgJson: any
+  reply: any | null
+  funds: any
+  response: any | null
+  gasUsed: string
+}
+
+export type ParsedWasmEvent = ParsedWasmStateEvent | ParsedWasmTxEvent
 
 type RequireAtLeastOne<T, Keys extends keyof T = keyof T> = Pick<
   T,
@@ -395,14 +443,14 @@ export type Transformer<V = any> = {
   filter: RequireAtLeastOne<{
     codeIdsKeys: string[]
     contractAddresses: string[]
-    matches: (event: ParsedWasmEvent) => boolean
+    matches: (event: ParsedWasmStateEvent) => boolean
   }>
   // If `name` returns `undefined`, the transformation will not be saved.
-  name: string | ((event: ParsedWasmEvent) => string | undefined)
+  name: string | ((event: ParsedWasmStateEvent) => string | undefined)
   // If `getValue` returns `undefined`, the transformation will not be saved.
   // All other values, including `null`, will be saved.
   getValue: (
-    event: ParsedWasmEvent,
+    event: ParsedWasmStateEvent,
     getLastValue: () => Promise<V | null>
   ) => V | null | undefined | Promise<V | null | undefined>
   // By default, a transformation gets created with a value of `null` if the
@@ -415,7 +463,7 @@ export type Transformer<V = any> = {
 export type TransformerMaker = (config: Config) => Transformer
 
 export type ProcessedTransformer<V = any> = Omit<Transformer<V>, 'filter'> & {
-  filter: (event: ParsedWasmEvent) => boolean
+  filter: (event: ParsedWasmStateEvent) => boolean
 }
 
 export enum WebhookType {
@@ -440,20 +488,20 @@ export type Webhook<V = any> = {
   filter: RequireAtLeastOne<{
     codeIdsKeys: string[]
     contractAddresses: string[]
-    matches: (event: WasmEvent) => boolean
+    matches: (event: WasmStateEvent) => boolean
   }>
   // If returns undefined, the webhook will not be called.
   endpoint:
     | WebhookEndpoint
     | undefined
-    | ((event: WasmEvent, env: ContractEnv) => WebhookEndpoint | undefined)
+    | ((event: WasmStateEvent, env: ContractEnv) => WebhookEndpoint | undefined)
     | ((
-        event: WasmEvent,
+        event: WasmStateEvent,
         env: ContractEnv
       ) => Promise<WebhookEndpoint | undefined>)
   // If returns undefined, the webhook will not be called.
   getValue: (
-    event: WasmEvent,
+    event: WasmStateEvent,
     getLastValue: () => Promise<any | null>,
     env: ContractEnv
   ) => V | undefined | Promise<V | undefined>
@@ -465,7 +513,7 @@ export type WebhookMaker = (
 ) => Webhook | null | undefined
 
 export type ProcessedWebhook<V = any> = Omit<Webhook<V>, 'filter'> & {
-  filter: (event: WasmEvent) => boolean
+  filter: (event: WasmStateEvent) => boolean
 }
 
 export type PendingWebhook = {

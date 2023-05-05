@@ -143,7 +143,7 @@ export class Computation extends Model {
 
     const firstNewerEvents =
       this.dependencies.length === 0
-        ? null
+        ? []
         : (
             await Promise.all(
               getDependableEventModels().map(async (DependableEventModel) => {
@@ -172,11 +172,12 @@ export class Computation extends Model {
             )
           ).filter((model): model is DependendableEventModel => model !== null)
 
-    const firstNewerEvent = firstNewerEvents
-      ? firstNewerEvents.reduce((newest, model) =>
-          newest.block.height < model.block.height ? newest : model
-        )
-      : null
+    const firstNewerEvent =
+      firstNewerEvents.length > 0
+        ? firstNewerEvents.reduce((newest, model) =>
+            newest.block.height < model.block.height ? newest : model
+          )
+        : null
 
     // If no new events for any of the dependent keys found, this computation is
     // still valid, so update validity.
@@ -312,15 +313,23 @@ export class Computation extends Model {
 
       await Promise.all([
         ...dependenciesToDelete.map((d) => d.destroy().catch(console.error)),
-        ...dependentKeysToAdd.map((dependentKey) =>
-          computation.$create('dependency', dependentKey, {
-            // No need to error if already exists. Either the computation used
-            // the same key multiple times, or we're racing against another
-            // process. If either of these happen, it's not a problem, as long
-            // as it exists.
-            ignoreDuplicates: true,
-          })
-        ),
+        ...(dependentKeysToAdd.length > 0
+          ? [
+              ComputationDependency.bulkCreate(
+                dependentKeysToAdd.map((dependentKey) => ({
+                  computationId: computation.id,
+                  ...dependentKey,
+                })),
+                {
+                  // No need to error if already exists. Either the computation
+                  // used the same key multiple times, or we're racing against
+                  // another process. If either of these happen, it's not a
+                  // problem, as long as it exists.
+                  ignoreDuplicates: true,
+                }
+              ),
+            ]
+          : []),
       ])
 
       computations.push(computation)

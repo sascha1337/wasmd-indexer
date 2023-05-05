@@ -14,6 +14,8 @@ type IndexerStakingEvent = {
   validatorOperator: string
   slashFactor: string
   amountSlashed: string
+  effectiveFraction: string
+  stakedTokensBurned: string
 }
 
 type ParsedStakingEvent = {
@@ -25,6 +27,8 @@ type ParsedStakingEvent = {
   validatorOperatorAddress: string
   slashFactor: string
   amountSlashed: string
+  effectiveFraction: string
+  stakedTokensBurned: string
 }
 
 export const staking: ModuleExporterMaker = ({
@@ -40,6 +44,10 @@ export const staking: ModuleExporterMaker = ({
     // Start at the next block after the last exported block if no initial block
     // set.
     BigInt(state.lastStakingBlockHeightExported ?? '0') + 1n
+
+  console.log(
+    `[staking] Catching up to initial block ${initialBlock.toLocaleString()}...`
+  )
 
   let lastBlockHeightSeen = 0
   let catchingUp = true
@@ -61,6 +69,8 @@ export const staking: ModuleExporterMaker = ({
         validatorOperatorAddress: event.validatorOperator,
         slashFactor: event.slashFactor,
         amountSlashed: event.amountSlashed,
+        effectiveFraction: event.effectiveFraction,
+        stakedTokensBurned: event.stakedTokensBurned,
       }
     })
 
@@ -94,6 +104,8 @@ export const staking: ModuleExporterMaker = ({
             validatorOperator: {},
             slashFactor: {},
             amountSlashed: {},
+            effectiveFraction: {},
+            stakedTokensBurned: {},
           }))
       ) {
         throw new Error('Invalid line structure.')
@@ -164,7 +176,11 @@ const exporter = async (
       await Validator.bulkCreate(
         uniqueValidators.map((operatorAddress) => ({
           operatorAddress,
-        }))
+        })),
+        {
+          // If already exists, ignore.
+          ignoreDuplicates: true,
+        }
       )
 
       // Break on success.

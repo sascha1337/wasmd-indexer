@@ -68,14 +68,7 @@ let readingPerModule: Record<string, boolean> = {}
 // When true, shut down ASAP.
 let shuttingDown = false
 
-let latestBlockHeightExported = 0n
-const exit = () => {
-  console.log(
-    `\n[${new Date().toISOString()}] Latest exported block with event: ${latestBlockHeightExported.toLocaleString()}. Exiting...`
-  )
-
-  process.exit(0)
-}
+const exit = () => process.exit(0)
 
 const main = async () => {
   // Load DB on start.
@@ -151,8 +144,8 @@ const main = async () => {
 let lastBlockHeight = 0
 // Update db state. Returns latest block height for log.
 const updateState = async (): Promise<State> => {
-  const { statusEndpoint } = loadConfig()
-  const { data } = await axios.get(statusEndpoint, {
+  const { rpc } = loadConfig()
+  const { data } = await axios.get(rpc + '/status', {
     // https://stackoverflow.com/a/74735197
     headers: { 'Accept-Encoding': 'gzip,deflate,compress' },
   })

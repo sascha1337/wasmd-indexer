@@ -19,10 +19,14 @@ import {
   Contract,
   State,
   Validator,
-  WasmEvent,
+  WasmStateEvent,
 } from '@/db'
 
 import { captureSentryException } from '../../sentry'
+
+// Map IP address to last time it was used.
+const testRateLimit = new Map<string, number>()
+const testCooldownSeconds = 10
 
 export const computer: Router.Middleware = async (ctx) => {
   const config = loadConfig()
@@ -86,6 +90,33 @@ export const computer: Router.Middleware = async (ctx) => {
     ctx.status = 401
     ctx.body = 'invalid API key'
     return
+  }
+
+  // If test account key, apply CORS and rate limit.
+  if (accountKey.isTest) {
+    // CORS.
+    if (ctx.req.headers['origin'] === 'http://localhost:3000') {
+      ctx.set('Access-Control-Allow-Origin', 'http://localhost:3000')
+    } else {
+      ctx.set('Access-Control-Allow-Origin', 'https://indexer.zone')
+    }
+
+    // Remove old rate limited IPs.
+    const now = Date.now()
+    for (const [ip, lastUsed] of testRateLimit.entries()) {
+      if (now - lastUsed >= testCooldownSeconds * 1000) {
+        testRateLimit.delete(ip)
+      }
+    }
+
+    // Rate limit.
+    const lastUsed = testRateLimit.get(ctx.ip)
+    if (lastUsed && now - lastUsed < testCooldownSeconds * 1000) {
+      ctx.status = 429
+      ctx.body = `${testCooldownSeconds} second test rate limit exceeded`
+      return
+    }
+    testRateLimit.set(ctx.ip, now)
   }
 
   // Validate address.
@@ -174,6 +205,12 @@ export const computer: Router.Middleware = async (ctx) => {
       return
     }
   }
+
+  // TODO: Calculate start and end block with times some other way. Or don't use
+  // start and end blocks at all and use block or time depending on which is
+  // passed? Right now, the block is retrieved by checking `WasmEvent`s, but
+  // there are many times of events now and any formula can use any event type.
+  // This needs a better solution.
 
   // If times passed, validate that it's a range with either a start or a
   // start/end pair.
@@ -300,7 +337,7 @@ export const computer: Router.Middleware = async (ctx) => {
       }
 
       block = (
-        await WasmEvent.findOne({
+        await WasmStateEvent.findOne({
           where: {
             blockTimeUnixMs: {
               [Op.lte]: time,
@@ -323,7 +360,7 @@ export const computer: Router.Middleware = async (ctx) => {
 
       const startBlock =
         (
-          await WasmEvent.findOne({
+          await WasmStateEvent.findOne({
             where: {
               blockTimeUnixMs: {
                 [Op.lte]: times[0],
@@ -334,14 +371,14 @@ export const computer: Router.Middleware = async (ctx) => {
         )?.block ??
         // Use first block if no event exists before start time.
         (
-          await WasmEvent.findOne({
+          await WasmStateEvent.findOne({
             order: [['blockTimeUnixMs', 'ASC']],
           })
         )?.block
       // Use latest block if no end time exists.
       const endBlock = times[1]
         ? (
-            await WasmEvent.findOne({
+            await WasmStateEvent.findOne({
               where: {
                 blockTimeUnixMs: {
                   [Op.lte]: times[1],

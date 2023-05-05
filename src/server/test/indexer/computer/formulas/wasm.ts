@@ -1,7 +1,7 @@
 import request from 'supertest'
 
 import { FormulaType, dbKeyForKeys } from '@/core'
-import { Computation, State, WasmEvent } from '@/db'
+import { Computation, State, WasmStateEvent } from '@/db'
 
 import { app } from '../../app'
 import { ComputerTestOptions } from '../types'
@@ -10,7 +10,7 @@ export const loadWasmTests = (options: ComputerTestOptions) => {
   describe('wasm', () => {
     beforeEach(async () => {
       const date = new Date()
-      await WasmEvent.bulkCreate([
+      await WasmStateEvent.bulkCreate([
         {
           contractAddress: 'valid_contract',
           blockHeight: 1,
@@ -107,7 +107,9 @@ export const loadWasmTests = (options: ComputerTestOptions) => {
       expect(computation.args).toBe('{}')
       expect(computation.dependencies.length).toBe(1)
       expect(computation.dependencies[0].key).toEqual(
-        `wasm_event:valid_contract:${dbKeyForKeys('some_state')}`
+        `${WasmStateEvent.dependentKeyNamespace}:valid_contract:${dbKeyForKeys(
+          'some_state'
+        )}`
       )
       expect(computation.dependencies[0].prefix).toBe(false)
       expect(computation.output).toEqual(JSON.stringify(response.body))

@@ -6,10 +6,7 @@ import { loadConfig } from '@/core/config'
 import { DbType } from '@/core/types'
 import { PendingWebhook, loadDb } from '@/db'
 
-const LOADER_MAP = ['—', '\\', '|', '/']
-
 let shuttingDown = false
-let logInterval: NodeJS.Timeout
 
 // Parse arguments.
 const program = new Command()
@@ -44,25 +41,7 @@ const main = async () => {
     type: DbType.Accounts,
   })
 
-  console.log(`\n\n[${new Date().toISOString()}] Firing webhooks...`)
-
-  // Statistics.
-  let printLoaderCount = 0
-  let succeeded = 0
-  let failed = 0
-  const printStatistics = () => {
-    printLoaderCount = (printLoaderCount + 1) % LOADER_MAP.length
-    process.stdout.write(
-      `\r${
-        LOADER_MAP[printLoaderCount]
-      } [webhooks] Succeeded: ${succeeded.toLocaleString()}. Failed: ${failed.toLocaleString()}.`
-    )
-  }
-
-  // Print latest statistics every 100ms.
-  logInterval = setInterval(printStatistics, 100)
-  // Allow process to exit even though this interval is alive.
-  logInterval.unref()
+  console.log(`\n[webhooks] Firing webhooks at ${new Date().toISOString()}...`)
 
   while (!shuttingDown) {
     const pending = await PendingWebhook.findAll({
@@ -75,21 +54,34 @@ const main = async () => {
       limit: batch,
     })
 
-    const requests = await Promise.allSettled(
-      pending.map((pendingWebhook) => pendingWebhook.fire())
-    )
+    let succeeded = 0
+    if (pending.length > 0) {
+      const requests = await Promise.allSettled(
+        pending.map((pendingWebhook) => pendingWebhook.fire())
+      )
 
-    succeeded += requests.filter(
-      (request) => request.status === 'fulfilled'
-    ).length
-    failed += requests.filter((request) => request.status === 'rejected').length
+      succeeded = requests.filter(
+        (request) => request.status === 'fulfilled'
+      ).length
+      const failed = requests.filter(
+        (request) => request.status === 'rejected'
+      ).length
 
-    // Wait one second between webhook checks so we're not spamming the DB.
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+      console.log(
+        `[webhooks] ${[
+          succeeded > 0 && `${succeeded.toLocaleString()} succeeded`,
+          failed > 0 && `${failed.toLocaleString()} failed`,
+        ]
+          .filter(Boolean)
+          .join(', ')}`
+      )
+    }
+
+    // If no webhooks or all failed, wait between loops to prevent spamming.
+    if (succeeded === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+    }
   }
-
-  printStatistics()
-  console.log()
 
   process.exit(0)
 }
@@ -98,6 +90,5 @@ main()
 
 process.on('SIGINT', () => {
   shuttingDown = true
-  clearInterval(logInterval)
   console.log('\nShutting down after current batch finishes...')
 })
